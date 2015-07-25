@@ -1,6 +1,7 @@
 import argparse
 from argparse import ArgumentTypeError
 import json
+import copy
 
 from smartsheetbulkedit.smartsheet.columntype import ColumnType
 from smartsheetbulkedit.smartsheet.smartsheetservice import SmartsheetService
@@ -19,6 +20,7 @@ class Cli:
 	def __init__(self, smartsheetToken):
 		self.__smartsheetToken = smartsheetToken
 		self.__argParser = argparse.ArgumentParser(description="Performs bulk operations on Smartsheets.")
+		self.__max_tries = 5
 		subparsers = self.__argParser.add_subparsers(dest=Cli.__COMMAND_KEY)
 
 		allColumnTypes = [getattr(ColumnType, var) for var in vars(ColumnType) if not var.startswith("__")]
@@ -90,7 +92,7 @@ class Cli:
 		args = self.__argParser.parse_args()
 		args.func(args)
 
-	def __addColumnInAllSheets(self, args):
+	def __addColumnInAllSheetsOld(self, args):
 		self.__getSmartsheetService().addColumnInAllSheets(
 			args.title, 
 			workspace=args.workspace, 
@@ -102,6 +104,36 @@ class Cli:
 			systemColumnType=args.systemColumnType, 
 			autoNumberFormat=args.autoNumberFormat, 
 			width=args.width)
+
+	def __addColumnInAllSheets(self, args):
+		sheetInfoList = self.__getSheetsInWorkspace(args.workspace)
+		sheets_to_work = copy.copy(sheetInfoList)
+		ss = self.__getSmartsheetService()
+		for i in range(self.__max_tries + 1):
+			(done_sheetInfos, failed_sheetInfos) = ss.addColumnInSheetList(
+					args.title,
+					index=args.index,
+					type=args.type,
+					options=args.options,
+					symbol=args.symbol,
+					 isPrimary=args.isPrimary,
+					systemColumnType=args.systemColumnType, 
+					autoNumberFormat=args.autoNumberFormat, 
+					width=args.width,
+					sheetInfoList=sheets_to_work)
+			if len(failed_sheetInfos) == 0:
+				return
+			if i != self.__max_tries:
+				sheets_to_work = []
+				for (sheetInfo, exc, backtrace) in failed_sheetInfos:
+					sheets_to_work.append(sheetInfo)
+			for (sheetInfo, exc, backtrace) in failed_sheetInfos:
+				print "Error adding Column to Sheet name: %s, ID: %s, error: %r" % (sheetInfo.name, sheetInfo.id, exc)
+				if i == self.__max_tries:
+					print "Will not retry Add Column operation"
+		print "ERROR: Failed to Add Column to Sheets:"
+		for sheetInfo in sheets_to_work:
+			print "    Sheet: %s, %s" % (sheetInfo.name, sheeInfo.permalink)
 
 	def __addRowInAllSheets(self, args):
 		self.__getSmartsheetService().addRowInAllSheets(
@@ -138,6 +170,20 @@ class Cli:
 
 	def __getSmartsheetService(self):
 		return SmartsheetService(self.__smartsheetToken)
+
+	def __getSheetsInWorkspace(self, workspaceName):
+		'''
+		Return a list of SheetInfo objects for the sheets in the named Workspace.
+		Raises an error if there are multiple Workspaces with the given name or
+		if there are no Workspaces with the given name.
+		'''
+		ss = self.__getSmartsheetService()
+		workspace_list = ss.getWorkspacesByName(workspaceName)
+		if len(workspace_list) > 1:
+			raise Exception("Multiple Workspaces are named: '%s'" % workspaceName)
+		if len(workspace_list) < 1:
+			raise Exception("No Workspaces are named: '%s'" % workspaceName)
+		return ss.getSheetInfosInWorkspace(workspace_list[0]['id'])
 
 def parseBoolean(value):
 	booleanValue = None
